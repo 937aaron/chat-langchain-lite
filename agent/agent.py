@@ -33,10 +33,24 @@ def _model_id() -> str:
 # The Context Hub-backed filesystem holds the agent's OWN context (AGENTS.md,
 # playbooks) — it is a read-only reference, NOT a user-delivery channel.
 _READONLY_FS_TOOLS = {"ls", "read_file", "glob", "grep"}
+_READONLY_FS_PROMPT = """## Reference Filesystem `ls`, `read_file`, `glob`, `grep`
+
+You have read-only access to a reference filesystem holding your own context (instructions and playbooks). All file paths must start with a /. Use pagination (offset/limit) when reading large files.
+
+- ls: list files in a directory
+- read_file: read a file
+- glob: find files matching a pattern (e.g., "**/*.md")
+- grep: search for text within files"""
 
 
 def _readonly_context_hub_fs() -> FilesystemMiddleware:
-    fs = FilesystemMiddleware(backend=ContextHubBackend(CONTEXT_HUB_REPO))
+    # Eviction is disabled because it would commit offloaded results into the Context Hub repo.
+    fs = FilesystemMiddleware(
+        backend=ContextHubBackend(CONTEXT_HUB_REPO),
+        system_prompt=_READONLY_FS_PROMPT,
+        tool_token_limit_before_evict=None,
+        human_message_token_limit_before_evict=None,
+    )
     fs.tools = [t for t in fs.tools if t.name in _READONLY_FS_TOOLS]
     return fs
 
