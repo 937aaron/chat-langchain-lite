@@ -107,7 +107,7 @@ ONLINE_EVALUATORS = [
 
 def setup_online_eval():
     import requests
-    from langchain_anthropic import ChatAnthropic
+    from scripts.setup import judge_model_json
 
     api_key = os.getenv("LANGSMITH_API_KEY")
     if not api_key:
@@ -125,7 +125,7 @@ def setup_online_eval():
 
     print(f"\nSetting up online evaluators on project '{PROJECT_NAME}'...")
 
-    model_json = ChatAnthropic(model="claude-haiku-4-5-20251001").to_json()
+    model_json = judge_model_json()
 
     for ev in ONLINE_EVALUATORS:
         payload = {

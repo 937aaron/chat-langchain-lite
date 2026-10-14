@@ -26,6 +26,7 @@ Usage:
 import json
 import os
 import sys
+import time
 import requests
 from datetime import datetime, timezone
 from dotenv import load_dotenv
@@ -35,6 +36,13 @@ load_dotenv(override=True)
 from evals.dataset import DATASET_NAME, DEMO_PRESENTER
 PROJECT_NAME = os.getenv("LANGSMITH_PROJECT", "chat-lc-lite")
 WORKSPACE_ID = os.getenv("LANGSMITH_WORKSPACE_ID", "").strip()
+
+# Online evaluators run inside LangSmith, so the judge model cannot use local
+# env vars: it routes through the LangSmith LLM Gateway (like utils/models.py)
+# and resolves its key from this LangSmith workspace secret at run time.
+JUDGE_MODEL = "claude-haiku-4-5-20251001"
+GATEWAY_ANTHROPIC_BASE_URL = "https://gateway.smith.langchain.com/anthropic"
+JUDGE_API_KEY_SECRET = "ANTHROPIC_API_KEY"
 
 
 def _ls_headers(api_key: str, json_body: bool = False) -> dict:
@@ -283,15 +291,59 @@ def create_online_evaluator(api_key: str, ev: dict, project_id: str, model_json:
         return None
 
 
+def judge_model_json() -> dict:
+    """Serialize the Gateway-routed judge model with its key as a workspace-secret reference."""
+    from langchain_anthropic import ChatAnthropic
+
+    model_json = ChatAnthropic(model=JUDGE_MODEL, base_url=GATEWAY_ANTHROPIC_BASE_URL).to_json()
+    model_json["kwargs"]["anthropic_api_key"] = {"lc": 1, "type": "secret", "id": [JUDGE_API_KEY_SECRET]}
+    return model_json
+
+
+def verify_online_evaluators(timeout_s: int = 300, poll_s: int = 15) -> list:
+    """Send one trace and return error messages from online evaluator feedback on it."""
+    from agent.agent import invoke_agent
+    from langsmith import Client
+
+    print("\n  Verifying online evaluators score a new trace...")
+    ls_client = Client()
+    keys = [ev["feedback_key"] for ev in EVALUATORS]
+    started = datetime.now(timezone.utc)
+    invoke_agent("What is LangSmith?")
+
+    deadline = time.monotonic() + timeout_s
+    scored = set()
+    while time.monotonic() < deadline:
+        time.sleep(poll_s)
+        run_ids = [r.id for r in ls_client.list_runs(project_name=PROJECT_NAME, is_root=True, start_time=started)]
+        if not run_ids:
+            continue
+        feedback = list(ls_client.list_feedback(run_ids=run_ids, feedback_key=keys))
+        errors = [
+            f"{fb.key}: {(fb.comment or 'evaluator error')[:200]}"
+            for fb in feedback
+            if (fb.extra or {}).get("error")
+        ]
+        if errors:
+            return errors
+        scored = {fb.key for fb in feedback if fb.score is not None or fb.value is not None}
+        if scored >= set(keys):
+            print("  ✅ All online evaluators scored the verification trace")
+            return []
+
+    missing = ", ".join(k for k in keys if k not in scored)
+    print(f"  ⚠️  No scores yet for: {missing}. Check the evaluator rules in LangSmith before demoing.")
+    return []
+
+
 def setup_online_evaluators(api_key: str) -> list:
     from langsmith import Client
-    from langchain_anthropic import ChatAnthropic
 
     print(f"\n[3/4] Setting up online evaluators on project '{PROJECT_NAME}'...")
 
     ls_client = Client()
     project_id = get_project_id(ls_client, PROJECT_NAME)
-    model_json = ChatAnthropic(model="claude-haiku-4-5-20251001").to_json()
+    model_json = judge_model_json()
 
     delete_existing_evaluators(api_key)
 
@@ -369,6 +421,17 @@ def main():
         json.dump({
             "run_rule_ids": our_rule_ids,
         }, f, indent=2)
+
+    evaluator_errors = verify_online_evaluators()
+    if evaluator_errors:
+        print("\nSetup failed: online evaluators returned errors instead of scores:")
+        for err in evaluator_errors:
+            print(f"  ❌ {err}")
+        print(
+            f"\nAdd a '{JUDGE_API_KEY_SECRET}' workspace secret in LangSmith (Settings → Secrets) "
+            "holding your LangSmith LLM Gateway key, then re-run setup."
+        )
+        sys.exit(1)
 
     if not args.skip_baseline_experiments:
         seed_baseline_experiments()

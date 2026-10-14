@@ -59,7 +59,11 @@ LANGSMITH_TRACING=true
 
 > If multiple presenters share a LangSmith workspace, use a unique `LANGSMITH_PROJECT` per person (e.g. `chat-lc-lite-morgan`) to avoid mixing traces and online evaluators. The project is created automatically on first use.
 
-**4. Run one-shot setup**
+**4. Add the online evaluator workspace secret**
+
+Online evaluators run inside LangSmith, not on your machine, so they can't read your `.env`. Their Claude Haiku judge is routed through the LangSmith LLM Gateway (`https://gateway.smith.langchain.com/anthropic`) and reads its key from a LangSmith workspace secret. In LangSmith → Settings → Secrets, add `ANTHROPIC_API_KEY` set to your LangSmith Gateway key (the same value as `LANGSMITH_API_KEY_GATEWAY`). Without it, every online evaluator fails with an Anthropic authentication error and records no score.
+
+**5. Run one-shot setup**
 ```bash
 python -m scripts.setup
 ```
@@ -67,18 +71,18 @@ python -m scripts.setup
 This does three things in one command:
 1. **Creates the LangSmith project** by sending one trace (required before online evaluators can be registered)
 2. **Creates the dataset** `chat-lc-lite-scope-<your-name>` with 3 curated test cases, then tags that version as `baseline` in LangSmith
-3. **Creates 6 online evaluators** in the LangSmith Evaluators UI at 100% sampling rate — every future trace is automatically scored for `security_advice`, `scope_adherence`, `tool_usage`, `response_completeness`, `professional_tone`, and `factual_accuracy`. Their run rule IDs are saved to `.demo_state.json` so cleanup can tell them apart from evaluators Engine adds.
+3. **Creates 6 online evaluators** in the LangSmith Evaluators UI at 100% sampling rate — every future trace is automatically scored for `security_advice`, `scope_adherence`, `tool_usage`, `response_completeness`, `professional_tone`, and `factual_accuracy`. Their run rule IDs are saved to `.demo_state.json` so cleanup can tell them apart from evaluators Engine adds. Setup then sends one verification trace and waits up to 5 minutes for its scores; if any evaluator returns an error (e.g. the workspace secret is missing), setup exits with code 1 instead of reporting success.
 
 Only needs to be run once. Between demos, run `python -m scripts.cleanup` instead.
 
-**5. Generate traces**
+**6. Generate traces**
 ```bash
 python -m scripts.generate_traces
 ```
 
 Runs 11 single-turn queries and 1 multi-turn threaded conversation through the buggy agent to populate LangSmith with trace and thread variety beyond the dataset examples.
 
-**6. Add GitHub Actions secrets and variables** (for CI/CD)
+**7. Add GitHub Actions secrets and variables** (for CI/CD)
 
 In your fork:
 - Settings → Secrets and variables → Actions → **Secrets** → add `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_CUSTOM_HEADERS`, `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT`, and `LANGSMITH_WORKSPACE_ID`
@@ -88,11 +92,11 @@ In your fork:
 
 > **Important:** When pasting secrets, make sure there are no trailing newlines or spaces.
 
-**7. Enable GitHub Actions**
+**8. Enable GitHub Actions**
 
 In your fork: Actions → (if prompted) enable workflows. GitHub disables Actions on forks by default — this step is required for offline evals to run on PRs.
 
-**8. Connect Engine**
+**9. Connect Engine**
 
 In LangSmith Engine, connect your LangSmith project (`LANGSMITH_PROJECT`) and your GitHub fork so Engine can read traces and open PRs against your repo.
 
@@ -176,6 +180,8 @@ Two LLM-as-judge evaluators run in CI (offline). Claude Haiku scores each 0 or 1
 Online evaluators run automatically on every trace as it arrives in LangSmith. This gives Engine a continuous signal on live traffic, not just offline evals on a fixed dataset.
 
 Six online evaluators are registered by `python -m scripts.setup`: `security_advice`, `scope_adherence`, `tool_usage`, `response_completeness`, `professional_tone`, and `factual_accuracy`.
+
+Their judge model runs in LangSmith through the LLM Gateway and authenticates with the `ANTHROPIC_API_KEY` workspace secret (see Setup step 4), never a key embedded in the rule.
 
 ## CI/CD
 
